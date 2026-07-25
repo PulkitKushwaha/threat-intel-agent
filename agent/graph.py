@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 
 from agent.state import AgentState
-from tools import ioc, actor   # specialist tools
+from tools import ioc, actor, exposure   # specialist tools
 
 load_dotenv()
 
@@ -169,6 +169,13 @@ def tool_node(state: AgentState) -> dict:
         if result.get("actor"):
             memory["last_actor"] = result["actor"]
 
+    elif intent == "exposure":
+        result = exposure.check_exposure(
+            entities.get("software"), entities.get("version")
+        )
+        if result.get("software"):
+            memory["last_software"] = result["software"]
+                
     elif intent == "follow_up":
         # resolve "it"/"that" against memory (IP first, then domain/hash)
         target = (
