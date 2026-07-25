@@ -3,15 +3,15 @@ app.py — Streamlit chat UI for the Conversational Threat-Intelligence Agent.
 
 Professional, readable UI using well-known Streamlit patterns:
   • st.chat_message / st.chat_input        — standard chat layout
-  • Color-coded verdict banners            — st.error/warning/success (scannable)
-  • Intent + confidence "chips"            — st.caption + inline badges
-  • Clean, icon-led execution trace        — readable observability
-  • Sidebar with capabilities, memory,     — orientation + controls
-    example one-click queries, and reset
+  • Semantic verdict banners               — cold blue default, green safe,
+                                             amber suspicious, red malicious only
+  • Intent + guard "chips"                  — colored by meaning (green greeting)
+  • Clean, icon-led execution trace         — readable observability
+  • Sidebar: capabilities, memory, quick queries, reset
 
-Two memory layers persist in st.session_state:
-  1. Entity memory (last_ip / domain / hash / actor)  → resolves "that IP"
-  2. History window (last 3 exchanges)                → conversational context
+Memory (in st.session_state):
+  1. Entity memory (last_ip / domain / hash / actor) → resolves "that IP"
+  2. History window (last 3 exchanges)              → conversational context
 
 Run from the project root:
     streamlit run app.py
@@ -36,10 +36,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Minimal CSS for a professional feel (chips, spacing) — readability preserved.
 st.markdown(
     """
     <style>
+      /* --- info chips --- */
       .chip {
         display:inline-block; padding:2px 10px; margin:2px 6px 2px 0;
         border-radius:12px; font-size:0.78rem; font-weight:600;
@@ -51,6 +51,17 @@ st.markdown(
       .chip-info    { background:#e9f1fb; color:#1c4e8a; border-color:#c2d8f2; }
       .step-line    { font-family:ui-monospace,Menlo,Consolas,monospace;
                       font-size:0.82rem; padding:1px 0; }
+
+      /* --- cold light-blue banner for normal bot answers --- */
+      .bot-info {
+        background:#eef4fc; border:1px solid #cfe0f5; color:#12395f;
+        padding:12px 14px; border-radius:10px; line-height:1.5;
+      }
+      /* --- light-green user bubble --- */
+      .user-bubble {
+        background:#edf7ee; border:1px solid #cfe8d1; color:#1f3d24;
+        padding:10px 13px; border-radius:10px; line-height:1.5;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -70,7 +81,6 @@ if "memory" not in st.session_state:
 # Helpers
 # ===========================================================================
 def build_history() -> str:
-    """Last HISTORY_WINDOW messages as a readable transcript for the LLM."""
     recent = st.session_state.messages[-HISTORY_WINDOW:]
     return "\n".join(
         f"{'Analyst' if m['role']=='user' else 'Assistant'}: {m['content']}"
@@ -78,14 +88,31 @@ def build_history() -> str:
     )
 
 
-def verdict_kind(answer: str) -> str:
-    """Classify the answer text to pick a banner color (scannable at a glance)."""
-    low = answer.lower()
-    if answer.startswith("⛔"):
+def guard_category(trace: list) -> str:
+    g = next((s for s in trace if s.get("step") == "guard"), {})
+    return g.get("category", "safe")
+
+
+def verdict_kind(answer: str, trace: list) -> str:
+    """
+    Choose a banner style:
+      greeting  → green (friendly)
+      blocked   → red  (only injection / scope violations)
+      danger    → red  (malicious / exposed / critical findings)
+      warn      → amber(suspicious / medium)
+      ok        → green(benign / safe)
+      info      → cold light blue (default, neutral answers)
+    """
+    cat = guard_category(trace)
+    if cat == "greeting":
+        return "greeting"
+    if answer.startswith("⛔") or cat in ("direct_injection", "indirect_injection", "out_of_scope"):
         return "blocked"
+
+    low = answer.lower()
     if any(w in low for w in ["malicious", "exposed", "critical", "high-severity", "patch urgently"]):
         return "danger"
-    if any(w in low for w in ["suspicious", "medium", "potentially"]):
+    if any(w in low for w in ["suspicious", "medium", "potentially exposed"]):
         return "warn"
     if any(w in low for w in ["benign", "not malicious", "no exposure", "likely safe"]):
         return "ok"
@@ -93,14 +120,17 @@ def verdict_kind(answer: str) -> str:
 
 
 def chips_from_trace(trace: list) -> str:
-    """Build small HTML chips summarizing intent + confidence + guard category."""
     chips = []
     guard = next((s for s in trace if s.get("step") == "guard"), {})
     router = next((s for s in trace if s.get("step") == "router"), {})
 
     if guard:
         cat = guard.get("category", "safe")
-        cls = "chip-ok" if guard.get("allow") else "chip-danger"
+        # Green for safe/greeting; red ONLY for real injection/scope violations.
+        if cat in ("direct_injection", "indirect_injection", "out_of_scope"):
+            cls = "chip-danger"
+        else:  # safe, greeting
+            cls = "chip-ok"
         chips.append(f'<span class="chip {cls}">🛡️ guard: {cat}</span>')
     if router.get("intent"):
         chips.append(f'<span class="chip chip-info">🧭 intent: {router["intent"]}</span>')
@@ -108,7 +138,6 @@ def chips_from_trace(trace: list) -> str:
 
 
 def render_trace(trace: list):
-    """Readable, icon-led execution trace."""
     icons = {"guard": "🛡️", "router": "🧭", "tools": "🔧", "synth": "📝"}
     for step in trace:
         name = step.get("step", "?")
@@ -121,29 +150,26 @@ def render_trace(trace: list):
 
 
 def render_answer(answer: str, trace: list, elapsed: float = None):
-    """Render an assistant answer with a color banner, chips, and trace."""
-    kind = verdict_kind(answer)
+    kind = verdict_kind(answer, trace)
 
-    # Color-coded banner for the headline verdict
     if kind == "blocked":
-        st.error(answer)
+        st.error(answer)                    # red — real security block
     elif kind == "danger":
-        st.error(answer)
+        st.error(answer)                    # red — malicious/exposed finding
     elif kind == "warn":
-        st.warning(answer)
-    elif kind == "ok":
-        st.success(answer)
+        st.warning(answer)                  # amber — suspicious
+    elif kind in ("ok", "greeting"):
+        st.success(answer)                  # green — benign / friendly greeting
     else:
-        st.markdown(answer)
+        # cold light-blue for neutral/default answers
+        st.markdown(f'<div class="bot-info">{answer}</div>', unsafe_allow_html=True)
 
-    # Chips row (intent / guard) + optional timing
     chip_html = chips_from_trace(trace)
     if elapsed is not None:
         chip_html += f'<span class="chip">⏱️ {elapsed:.1f}s</span>'
     if chip_html:
         st.markdown(chip_html, unsafe_allow_html=True)
 
-    # Observability trace
     if trace:
         with st.expander("🔍 Execution trace (tool calls & steps)"):
             render_trace(trace)
@@ -181,7 +207,6 @@ with st.sidebar:
         "We run Confluence 7.13 — are we exposed?",
         "Pivot from that IP to related domains",
     ]
-    # Clickable example buttons — stage a query for the input loop.
     for ex in examples:
         if st.button(ex, use_container_width=True):
             st.session_state.staged_query = ex
@@ -212,7 +237,8 @@ for msg in st.session_state.messages:
         if msg["role"] == "assistant":
             render_answer(msg["content"], msg.get("trace", []), msg.get("elapsed"))
         else:
-            st.markdown(msg["content"])
+            st.markdown(f'<div class="user-bubble">{msg["content"]}</div>',
+                        unsafe_allow_html=True)
 
 
 # ===========================================================================
@@ -227,7 +253,7 @@ if prompt:
 
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user", avatar="🧑‍💻"):
-        st.markdown(prompt)
+        st.markdown(f'<div class="user-bubble">{prompt}</div>', unsafe_allow_html=True)
 
     with st.chat_message("assistant", avatar="🛡️"):
         with st.spinner("Analyzing threat intelligence…"):
