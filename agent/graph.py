@@ -6,27 +6,21 @@ Graph shape:
         ┌─────────┐   allow?   ┌──────────┐   ┌───────────┐   ┌───────────┐
   ─────►│  guard  ├───────────►│  router  ├──►│   tools   ├──►│   synth   ├──► END
         └────┬────┘            └──────────┘   └───────────┘   └───────────┘
-             │ blocked
+             │ blocked (injection / scope / greeting)
              └──────────────────────────────────────────────────────────► END
 
-Security (assessment: "injection + scope", 20%):
+Security ("injection + scope", 20%):
   • Input guard (agent.guard.check_input) — LLM classifier w/ structured output
-    catches DIRECT injection and OUT-OF-SCOPE requests; keyword pre-filter for
-    obvious attacks (cost control).
+    catches DIRECT injection + OUT-OF-SCOPE; keyword pre-filter for obvious
+    attacks; fails CLOSED on content-safety rejections.
+  • Greeting lane — social messages get a warm onboarding reply, not a block.
   • Indirect-injection sanitizer (agent.guard.wrap_untrusted_data) — wraps tool
     data so the synth LLM treats it as DATA, never instructions.
 
-Memory model (two layers):
-  • ENTITY memory (state["memory"]) — last_ip/domain/hash/actor.
-  • HISTORY window (state["history"]) — last few conversation turns.
+Memory: ENTITY memory (state["memory"]) + HISTORY window (state["history"]).
+Router: STRUCTURED OUTPUTS (schema-enforced intents).
 
-Router uses STRUCTURED OUTPUTS (schema-enforced intents).
-
-Wired tools:
-  • ioc_lookup → tools.ioc      (VT + AbuseIPDB + OTX)
-  • actor_ttp  → tools.actor    (MITRE ATT&CK KB)
-  • exposure   → tools.exposure (NVD CVE)
-  • pivot      → tools.pivot    (VT relationships)
+Wired tools: ioc_lookup, actor_ttp, exposure, pivot, follow_up.
 
 Run:  python -m agent.graph "Is 8.8.8.8 malicious?"
 """
@@ -71,7 +65,7 @@ class RouterDecision(BaseModel):
 
 
 # ===========================================================================
-# NODE 1 — Guard: LLM-based injection + scope classification (structured).
+# NODE 1 — Guard: injection + scope + greeting classification (structured).
 # ===========================================================================
 def guard_node(state: AgentState) -> dict:
     verdict = guard.check_input(state["user_input"])
@@ -198,8 +192,7 @@ def tool_node(state: AgentState) -> dict:
 
 
 # ===========================================================================
-# NODE 4 — Synth: grounded, human-facing answer. Tool data is wrapped as
-# UNTRUSTED (indirect-injection defense) before reaching the LLM.
+# NODE 4 — Synth: grounded, human-facing answer. Tool data wrapped as UNTRUSTED.
 # ===========================================================================
 def synth_node(state: AgentState) -> dict:
     history = state.get("history", "")
@@ -235,7 +228,7 @@ def synth_node(state: AgentState) -> dict:
 
 
 # ===========================================================================
-# CONDITIONAL EDGE + blocked handler
+# CONDITIONAL EDGE + blocked/greeting handler
 # ===========================================================================
 def route_after_guard(state: AgentState) -> str:
     return "blocked" if state.get("blocked") else "continue"
@@ -244,7 +237,17 @@ def route_after_guard(state: AgentState) -> str:
 def blocked_node(state: AgentState) -> dict:
     category = state.get("block_category", "blocked")
     reason = state.get("block_reason", "Request blocked.")
-    if category == "out_of_scope":
+
+    if category == "greeting":
+        msg = (
+            "👋 Hi! I'm your **Threat Intelligence Assistant**. I can help you:\n\n"
+            "- 🔍 Check if an IP, domain, or file hash is malicious\n"
+            "- 🎭 Profile threat actors and their TTPs (e.g. APT29)\n"
+            "- 🛡️ Assess software exposure to known CVEs\n"
+            "- 🔗 Pivot from an entity to related indicators\n\n"
+            "What would you like to investigate?"
+        )
+    elif category == "out_of_scope":
         msg = (
             "⛔ I'm a threat-intelligence assistant, so I can only help with "
             "IOC lookups, threat actors & TTPs, software exposure, and entity "
@@ -252,6 +255,7 @@ def blocked_node(state: AgentState) -> dict:
         )
     else:
         msg = f"⛔ Request blocked — {reason}"
+
     return {"answer": msg}
 
 
