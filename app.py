@@ -3,10 +3,11 @@ app.py — Streamlit chat UI for the Conversational Threat-Intelligence Agent.
 
 Professional, readable UI using well-known Streamlit patterns:
   • st.chat_message / st.chat_input        — standard chat layout
-  • Semantic verdict banners               — cold blue default, green safe,
-                                             amber suspicious, red malicious only
-  • Intent + guard "chips"                  — colored by meaning (green greeting)
-  • Clean, icon-led execution trace         — readable observability
+  • Sticky app header                       — title stays pinned while scrolling
+  • Semantic verdict banners                — cold blue default, green safe,
+                                              amber suspicious, red malicious only
+  • Intent + guard "chips"                   — colored by meaning (green greeting)
+  • Clean, icon-led execution trace          — readable observability
   • Sidebar: capabilities, memory, quick queries, reset
 
 Memory (in st.session_state):
@@ -27,7 +28,7 @@ HISTORY_WINDOW = 6  # 3 user + 3 assistant messages
 
 
 # ===========================================================================
-# Page config + light styling
+# Page config + styling
 # ===========================================================================
 st.set_page_config(
     page_title="Threat Intelligence Agent",
@@ -39,6 +40,19 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+      /* --- trim Streamlit's default top padding --- */
+      .block-container { padding-top: 1rem !important; }
+
+      /* --- sticky app header (stays pinned while chat scrolls) --- */
+      .app-header {
+        position: sticky; top: 0; z-index: 999;
+        background: #ffffff;
+        padding: 6px 0 8px 0; margin-bottom: 6px;
+        border-bottom: 1px solid #e6e6e6;
+      }
+      .app-header h1 { margin: 0; font-size: 1.55rem; }
+      .app-header p  { margin: 2px 0 0 0; font-size: 0.85rem; color: #5a6472; }
+
       /* --- info chips --- */
       .chip {
         display:inline-block; padding:2px 10px; margin:2px 6px 2px 0;
@@ -92,13 +106,6 @@ def verdict_kind(answer: str, trace: list) -> str:
     """
     Choose a banner style. Order matters: BENIGN / negation phrases are checked
     BEFORE danger keywords, so "does not appear malicious" is green, not red.
-
-      greeting  → green (friendly)
-      blocked   → red  (injection / scope violations only)
-      ok        → green(benign / safe)
-      danger    → red  (genuinely malicious / exposed / critical)
-      warn      → amber(suspicious / medium)
-      info      → cold light blue (default, neutral)
     """
     cat = guard_category(trace)
     if cat == "greeting":
@@ -186,14 +193,18 @@ def render_answer(answer: str, trace: list, elapsed: float = None):
 
 
 # ===========================================================================
-# Header
+# Sticky header
 # ===========================================================================
-st.title("🛡️ Threat Intelligence Agent")
-st.caption(
-    "Natural-language SOC assistant · IOC reputation · Actor TTPs · "
-    "CVE exposure · Entity pivoting — grounded, cited, injection-resistant."
+st.markdown(
+    """
+    <div class="app-header">
+      <h1>🛡️ Threat Intelligence Agent</h1>
+      <p>Natural-language SOC assistant · IOC reputation · Actor TTPs ·
+         CVE exposure · Entity pivoting — grounded, cited, injection-resistant.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
-st.divider()
 
 
 # ===========================================================================
