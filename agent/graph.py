@@ -22,8 +22,13 @@ Router uses STRUCTURED OUTPUTS (client.beta.chat.completions.parse) so the
 LLM is constrained to our Pydantic schema at generation time — an invalid
 intent like 'ioc_reputation' becomes structurally impossible.
 
+Wired tools so far:
+  • ioc_lookup  → tools.ioc   (live APIs: VT + AbuseIPDB + OTX)
+  • actor_ttp   → tools.actor (local MITRE ATT&CK knowledge base)
+
 Run it directly to see the graph route a real query:
     python -m agent.graph "Is 8.8.8.8 malicious?"
+    python -m agent.graph "What TTPs is APT29 known for?"
 """
 
 import os
@@ -37,7 +42,7 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 
 from agent.state import AgentState
-from tools import ioc   # our first specialist tool (already built + tested)
+from tools import ioc, actor   # specialist tools
 
 load_dotenv()
 
@@ -119,7 +124,6 @@ def router_node(state: AgentState) -> dict:
             decision = RouterDecision(intent="unknown")
     except Exception as e:
         # Never crash the graph on a routing hiccup — degrade to 'unknown'.
-        decision = RouterDecision(intent="unknown")
         trace = state.get("trace", [])
         trace.append({"step": "router", "error": str(e)[:100], "intent": "unknown"})
         return {
@@ -140,7 +144,9 @@ def router_node(state: AgentState) -> dict:
 
 # ===========================================================================
 # NODE 3 — Tools: dispatch to the right specialist and update memory.
-# (Only ioc wired for now; actor/exposure/pivot slot in here next.)
+#
+# Wired: ioc_lookup, actor_ttp, follow_up.
+# Coming next: exposure, pivot.
 # ===========================================================================
 def tool_node(state: AgentState) -> dict:
     intent = state["intent"]
@@ -156,6 +162,12 @@ def tool_node(state: AgentState) -> dict:
             memory[f"last_{result['type']}"] = result["ioc"]
         else:
             result = {"verdict": "No indicator found in the query to look up."}
+
+    elif intent == "actor_ttp":
+        actor_name = entities.get("actor")
+        result = actor.lookup_actor(actor_name)
+        if result.get("actor"):
+            memory["last_actor"] = result["actor"]
 
     elif intent == "follow_up":
         # resolve "it"/"that" against memory (IP first, then domain/hash)
