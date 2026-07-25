@@ -80,7 +80,7 @@ def guard_node(state: AgentState) -> dict:
     return {
         "blocked": not verdict.allow,
         "block_reason": verdict.reason if not verdict.allow else None,
-        "block_category": verdict.category,
+        "block_category": verdict.category,   # ← passes category to blocked_node
         "trace": trace,
     }
 
