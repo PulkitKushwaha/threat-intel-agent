@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 
 from agent.state import AgentState
-from tools import ioc, actor, exposure   # specialist tools
+from tools import ioc, actor, exposure, pivot   # specialist tools
 
 load_dotenv()
 
@@ -176,6 +176,15 @@ def tool_node(state: AgentState) -> dict:
         if result.get("software"):
             memory["last_software"] = result["software"]
                 
+    elif intent == "pivot":
+        source = (
+            entities.get("ip")
+            or entities.get("domain")
+            or memory.get("last_ip")
+            or memory.get("last_domain")
+        )
+        result = pivot.pivot(source, target="domains")
+            
     elif intent == "follow_up":
         # resolve "it"/"that" against memory (IP first, then domain/hash)
         target = (
