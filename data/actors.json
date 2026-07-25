@@ -1,0 +1,85 @@
+{
+  "_meta": {
+    "description": "Curated threat-actor knowledge base derived from MITRE ATT&CK (Enterprise). Each actor's TTPs cite their real MITRE technique IDs and group page, so answers remain grounded and attributable.",
+    "source_framework": "MITRE ATT&CK",
+    "framework_url": "https://attack.mitre.org/groups/"
+  },
+  "actors": {
+    "APT29": {
+      "group_id": "G0016",
+      "aliases": ["Cozy Bear", "Nobelium", "The Dukes", "Midnight Blizzard", "UNC2452"],
+      "attribution": "Russia (SVR)",
+      "description": "Russian state-sponsored threat group attributed to the SVR foreign intelligence service. Known for stealthy, long-term espionage campaigns including the SolarWinds supply-chain compromise.",
+      "ttps": [
+        {"id": "T1566", "name": "Phishing", "tactic": "Initial Access"},
+        {"id": "T1195.002", "name": "Compromise Software Supply Chain", "tactic": "Initial Access"},
+        {"id": "T1078", "name": "Valid Accounts", "tactic": "Defense Evasion / Persistence"},
+        {"id": "T1059.001", "name": "PowerShell", "tactic": "Execution"},
+        {"id": "T1550.001", "name": "Application Access Token", "tactic": "Lateral Movement"},
+        {"id": "T1071.001", "name": "Web Protocols (C2)", "tactic": "Command and Control"}
+      ],
+      "notable_campaigns": ["SolarWinds (SUNBURST) 2020", "COVID-19 vaccine research targeting"],
+      "source": "https://attack.mitre.org/groups/G0016/"
+    },
+    "APT28": {
+      "group_id": "G0007",
+      "aliases": ["Fancy Bear", "Sofacy", "Sednit", "STRONTIUM", "Forest Blizzard"],
+      "attribution": "Russia (GRU)",
+      "description": "Russian military intelligence (GRU) threat group active since at least 2004, known for targeting governments, militaries, and election-related organizations.",
+      "ttps": [
+        {"id": "T1566.001", "name": "Spearphishing Attachment", "tactic": "Initial Access"},
+        {"id": "T1190", "name": "Exploit Public-Facing Application", "tactic": "Initial Access"},
+        {"id": "T1110", "name": "Brute Force", "tactic": "Credential Access"},
+        {"id": "T1203", "name": "Exploitation for Client Execution", "tactic": "Execution"},
+        {"id": "T1071", "name": "Application Layer Protocol (C2)", "tactic": "Command and Control"}
+      ],
+      "notable_campaigns": ["DNC breach 2016", "Olympic anti-doping agency targeting"],
+      "source": "https://attack.mitre.org/groups/G0007/"
+    },
+    "Lazarus Group": {
+      "group_id": "G0032",
+      "aliases": ["Hidden Cobra", "Zinc", "Diamond Sleet", "Guardians of Peace"],
+      "attribution": "North Korea (RGB)",
+      "description": "North Korean state-sponsored group known for financially motivated operations (bank heists, cryptocurrency theft) as well as destructive and espionage attacks.",
+      "ttps": [
+        {"id": "T1566", "name": "Phishing", "tactic": "Initial Access"},
+        {"id": "T1486", "name": "Data Encrypted for Impact (Ransomware)", "tactic": "Impact"},
+        {"id": "T1105", "name": "Ingress Tool Transfer", "tactic": "Command and Control"},
+        {"id": "T1027", "name": "Obfuscated Files or Information", "tactic": "Defense Evasion"},
+        {"id": "T1059", "name": "Command and Scripting Interpreter", "tactic": "Execution"}
+      ],
+      "notable_campaigns": ["Sony Pictures 2014", "WannaCry 2017", "Bangladesh Bank heist 2016"],
+      "source": "https://attack.mitre.org/groups/G0032/"
+    },
+    "APT41": {
+      "group_id": "G0096",
+      "aliases": ["Wicked Panda", "Barium", "Double Dragon", "Brass Typhoon"],
+      "attribution": "China",
+      "description": "Chinese threat group conducting both state-sponsored espionage and financially motivated operations, notable for supply-chain compromises and dual-use tooling.",
+      "ttps": [
+        {"id": "T1195", "name": "Supply Chain Compromise", "tactic": "Initial Access"},
+        {"id": "T1190", "name": "Exploit Public-Facing Application", "tactic": "Initial Access"},
+        {"id": "T1505.003", "name": "Web Shell", "tactic": "Persistence"},
+        {"id": "T1055", "name": "Process Injection", "tactic": "Defense Evasion"},
+        {"id": "T1071.001", "name": "Web Protocols (C2)", "tactic": "Command and Control"}
+      ],
+      "notable_campaigns": ["CCleaner supply-chain attack", "Video-game industry targeting"],
+      "source": "https://attack.mitre.org/groups/G0096/"
+    },
+    "FIN7": {
+      "group_id": "G0046",
+      "aliases": ["Carbanak Group", "Carbon Spider", "Sangria Tempest"],
+      "attribution": "Financially motivated (criminal)",
+      "description": "Financially motivated threat group targeting retail, hospitality, and financial sectors, primarily to steal payment-card data; later linked to ransomware operations.",
+      "ttps": [
+        {"id": "T1566.001", "name": "Spearphishing Attachment", "tactic": "Initial Access"},
+        {"id": "T1204.002", "name": "Malicious File (User Execution)", "tactic": "Execution"},
+        {"id": "T1053.005", "name": "Scheduled Task", "tactic": "Persistence"},
+        {"id": "T1055", "name": "Process Injection", "tactic": "Defense Evasion"},
+        {"id": "T1005", "name": "Data from Local System", "tactic": "Collection"}
+      ],
+      "notable_campaigns": ["Point-of-sale (POS) malware campaigns", "Carbanak banking theft"],
+      "source": "https://attack.mitre.org/groups/G0046/"
+    }
+  }
+}
