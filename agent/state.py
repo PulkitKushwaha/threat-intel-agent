@@ -34,5 +34,8 @@ class AgentState(TypedDict, total=False):
     # --- Observability (every node appends) ---
     trace: List[Dict[str, Any]]          # step-by-step record → wins the observability bonus
 
+    # --- History Management (every node appends) ---
+    history: str            # rolling window of recent conversation turns
+
     # --- Multi-turn memory (persists across turns via Streamlit session_state) ---
     memory: Dict[str, Optional[str]]     # {last_ip, last_domain, last_hash, last_actor}
