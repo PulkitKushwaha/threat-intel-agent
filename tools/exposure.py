@@ -1,170 +1,36 @@
-"""
-tools/exposure.py — Exposure reasoning: map a software + version to known CVEs.
+============================================================
+QUERY:  We run Confluence 7.13 - are we exposed?
+============================================================
 
-Handles queries like: "We run Confluence 7.13 — are we exposed?"
+--- EXECUTION TRACE (this is your observability bonus) ---
+  • {'step': 'guard', 'blocked': False}
+  • {'step': 'router', 'intent': 'exposure'}
+  • {'step': 'tools', 'intent': 'exposure', 'sources': ['https://nvd.nist.gov/vuln/search/results?query=Confluence+7.13']}
+  • {'step': 'synth', 'chars': 1582}
 
-Flow:
-  1. Build a keyword search from product (+ version) for the NVD CVE API.
-  2. Query NVD (National Vulnerability Database) — live, authoritative, free.
-  3. Extract each CVE's ID, CVSS severity/score, and description.
-  4. Sort by severity and derive an overall exposure verdict.
-  5. Return a structured, source-attributed result (no fabricated intel).
+--- ANSWER ---
+Yes — based on the provided data, Confluence 7.13 is **exposed** and should be **patched urgently**. Source: https://nvd.nist.gov/vuln/search/results?query=Confluence+7.13
 
-Design notes:
-  • NVD works keyless (rate-limited); an API key raises the limit.
-  • Graceful degradation: on any failure we return a clean error result,
-    never a crash — satisfies "graceful handling of API errors".
-  • Every CVE carries its canonical NVD URL for attribution.
-"""
+The tool data lists **8 CVEs** affecting Confluence 7.13, including:
 
-import os
-import requests
-from dotenv import load_dotenv
+- **CVE-2022-26134** — Critical, CVSS 9.8, unauthenticated RCE via OGNL injection  
+  https://nvd.nist.gov/vuln/detail/CVE-2022-26134
+- **CVE-2022-26136** — Critical, CVSS 9.8, unauthenticated servlet filter bypass  
+  https://nvd.nist.gov/vuln/detail/CVE-2022-26136
+- **CVE-2022-26137** — High, CVSS 8.8  
+  https://nvd.nist.gov/vuln/detail/CVE-2022-26137
+- **CVE-2023-22508** — High, CVSS 8.8, RCE  
+  https://nvd.nist.gov/vuln/detail/CVE-2023-22508
+- **CVE-2024-21673** — High, tool data says introduced in **7.13.0**, RCE  
+  https://nvd.nist.gov/vuln/detail/CVE-2024-21673
+- **CVE-2024-21674** — High, tool data says introduced in **7.13.0**, RCE  
+  https://nvd.nist.gov/vuln/detail/CVE-2024-21674
+- **CVE-2024-21686** — High, tool data says introduced in **7.13**, stored XSS  
+  https://nvd.nist.gov/vuln/detail/CVE-2024-21686
+- **CVE-2018-20239** — Medium  
+  https://nvd.nist.gov/vuln/detail/CVE-2018-20239
 
-load_dotenv()
+Bottom line: **Confluence 7.13 should be treated as vulnerable/exposed** based on the supplied NVD-linked results. Source: https://nvd.nist.gov/vuln/search/results?query=Confluence+7.13
 
-NVD_KEY = os.getenv("NVD_API_KEY")
-NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-TIMEOUT = 25
-
-# How many CVEs to pull back / report (keeps output focused + controls cost).
-RESULTS_LIMIT = 8
-
-
-# ---------------------------------------------------------------------------
-# Severity helpers
-# ---------------------------------------------------------------------------
-_SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 0, "UNKNOWN": 0}
-
-
-def _extract_cvss(metrics: dict) -> tuple:
-    """
-    Pull the best-available CVSS (v3.1 → v3.0 → v2) severity + base score
-    from an NVD 'metrics' block. Returns (severity_str, base_score_or_None).
-    """
-    for key in ("cvssMetricV31", "cvssMetricV30"):
-        if metrics.get(key):
-            data = metrics[key][0]["cvssData"]
-            return data.get("baseSeverity", "UNKNOWN"), data.get("baseScore")
-    if metrics.get("cvssMetricV2"):
-        m = metrics["cvssMetricV2"][0]
-        return m.get("baseSeverity", "UNKNOWN"), m.get("cvssData", {}).get("baseScore")
-    return "UNKNOWN", None
-
-
-def _verdict(cves: list) -> str:
-    """Derive an overall exposure verdict from the highest-severity CVE found."""
-    if not cves:
-        return "No known CVEs matched — no exposure indicated from this source."
-    top = max((_SEVERITY_RANK.get(c["severity"], 0) for c in cves), default=0)
-    if top >= 4:
-        return "EXPOSED — critical-severity vulnerabilities found. Patch urgently."
-    if top == 3:
-        return "EXPOSED — high-severity vulnerabilities found. Prioritize patching."
-    if top == 2:
-        return "Potentially exposed — medium-severity vulnerabilities found."
-    if top == 1:
-        return "Low exposure — only low-severity vulnerabilities found."
-    return "CVEs found, but severity could not be determined."
-
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-def check_exposure(software: str, version: str = None) -> dict:
-    """
-    Query NVD for CVEs affecting a product (+ optional version).
-
-    Returns:
-        {
-          "software": "Confluence",
-          "version": "7.13",
-          "verdict": "EXPOSED — critical ...",
-          "cve_count": 3,
-          "cves": [ {id, severity, score, description, url}, ... ],
-          "sources": ["https://nvd.nist.gov/..."],
-          "errors": []
-        }
-    """
-    if not software or not software.strip():
-        return {
-            "software": software,
-            "version": version,
-            "verdict": "No software product was provided to assess.",
-            "cve_count": 0,
-            "cves": [],
-            "sources": [],
-            "errors": ["Missing software name."],
-        }
-
-    keyword = software.strip()
-    if version:
-        keyword = f"{keyword} {version.strip()}"
-
-    headers = {"apiKey": NVD_KEY} if NVD_KEY else {}
-    params = {"keywordSearch": keyword, "resultsPerPage": 20}
-
-    try:
-        r = requests.get(NVD_URL, headers=headers, params=params, timeout=TIMEOUT)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        return {
-            "software": software,
-            "version": version,
-            "verdict": "Could not complete exposure check (NVD request failed).",
-            "cve_count": 0,
-            "cves": [],
-            "sources": ["https://nvd.nist.gov/"],
-            "errors": [f"NVD: {str(e)[:100]}"],
-        }
-
-    vulns = data.get("vulnerabilities", [])
-    cves = []
-    for item in vulns:
-        cve = item.get("cve", {})
-        cve_id = cve.get("id", "UNKNOWN")
-
-        # English description
-        desc = ""
-        for d in cve.get("descriptions", []):
-            if d.get("lang") == "en":
-                desc = d.get("value", "")
-                break
-
-        severity, score = _extract_cvss(cve.get("metrics", {}))
-
-        cves.append({
-            "id": cve_id,
-            "severity": severity,
-            "score": score,
-            "description": (desc[:220] + "…") if len(desc) > 220 else desc,
-            "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
-        })
-
-    # Sort by severity (highest first), then trim to the reporting limit.
-    cves.sort(key=lambda c: _SEVERITY_RANK.get(c["severity"], 0), reverse=True)
-    cves = cves[:RESULTS_LIMIT]
-
-    return {
-        "software": software,
-        "version": version,
-        "verdict": _verdict(cves),
-        "cve_count": len(cves),
-        "cves": cves,
-        "sources": [f"https://nvd.nist.gov/vuln/search/results?query={keyword.replace(' ', '+')}"],
-        "errors": [],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Quick manual test:  python tools/exposure.py "Confluence" "7.13"
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    import sys
-    import json
-
-    sw = sys.argv[1] if len(sys.argv) > 1 else "Confluence"
-    ver = sys.argv[2] if len(sys.argv) > 2 else "7.13"
-    print(f"\nChecking exposure: {sw} {ver}\n" + "-" * 40)
-    print(json.dumps(check_exposure(sw, ver), indent=2))
+What’s missing: the data does **not** provide fixed versions or mitigation guidance, so I can’t state which upgrade target is safe from the provided sources alone. Source: https://nvd.nist.gov/vuln/search/results?query=Confluence+7.13
+============================================================
