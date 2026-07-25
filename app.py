@@ -57,11 +57,6 @@ st.markdown(
         background:#eef4fc; border:1px solid #cfe0f5; color:#12395f;
         padding:12px 14px; border-radius:10px; line-height:1.5;
       }
-      /* --- light-green user bubble --- */
-      .user-bubble {
-        background:#edf7ee; border:1px solid #cfe8d1; color:#1f3d24;
-        padding:10px 13px; border-radius:10px; line-height:1.5;
-      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -95,13 +90,15 @@ def guard_category(trace: list) -> str:
 
 def verdict_kind(answer: str, trace: list) -> str:
     """
-    Choose a banner style:
+    Choose a banner style. Order matters: BENIGN / negation phrases are checked
+    BEFORE danger keywords, so "does not appear malicious" is green, not red.
+
       greeting  → green (friendly)
-      blocked   → red  (only injection / scope violations)
-      danger    → red  (malicious / exposed / critical findings)
-      warn      → amber(suspicious / medium)
+      blocked   → red  (injection / scope violations only)
       ok        → green(benign / safe)
-      info      → cold light blue (default, neutral answers)
+      danger    → red  (genuinely malicious / exposed / critical)
+      warn      → amber(suspicious / medium)
+      info      → cold light blue (default, neutral)
     """
     cat = guard_category(trace)
     if cat == "greeting":
@@ -110,12 +107,27 @@ def verdict_kind(answer: str, trace: list) -> str:
         return "blocked"
 
     low = answer.lower()
-    if any(w in low for w in ["malicious", "exposed", "critical", "high-severity", "patch urgently"]):
-        return "danger"
-    if any(w in low for w in ["suspicious", "medium", "potentially exposed"]):
-        return "warn"
-    if any(w in low for w in ["benign", "not malicious", "no exposure", "likely safe"]):
+
+    # 1) BENIGN / negation FIRST — these often contain the word "malicious".
+    benign_phrases = [
+        "not malicious", "does not appear malicious", "not appear malicious",
+        "likely benign", "appears benign", "is benign", "no exposure",
+        "not currently indicated", "no known cves", "no known vulnerabilities",
+        "likely safe", "not exposed",
+    ]
+    if any(p in low for p in benign_phrases):
         return "ok"
+
+    # 2) Genuine danger.
+    if any(w in low for w in ["exposed", "critical-severity", "patch urgently",
+                              "high-severity", "malicious (high", "high confidence"]):
+        return "danger"
+
+    # 3) Suspicious / medium.
+    if any(w in low for w in ["suspicious", "potentially exposed", "medium-severity"]):
+        return "warn"
+
+    # 4) Default: neutral cold blue.
     return "info"
 
 
@@ -126,7 +138,6 @@ def chips_from_trace(trace: list) -> str:
 
     if guard:
         cat = guard.get("category", "safe")
-        # Green for safe/greeting; red ONLY for real injection/scope violations.
         if cat in ("direct_injection", "indirect_injection", "out_of_scope"):
             cls = "chip-danger"
         else:  # safe, greeting
@@ -153,16 +164,15 @@ def render_answer(answer: str, trace: list, elapsed: float = None):
     kind = verdict_kind(answer, trace)
 
     if kind == "blocked":
-        st.error(answer)                    # red — real security block
+        st.error(answer)                    # red — security block
     elif kind == "danger":
-        st.error(answer)                    # red — malicious/exposed finding
+        st.error(answer)                    # red — genuinely malicious/exposed
     elif kind == "warn":
         st.warning(answer)                  # amber — suspicious
     elif kind in ("ok", "greeting"):
         st.success(answer)                  # green — benign / friendly greeting
     else:
-        # cold light-blue for neutral/default answers
-        st.markdown(f'<div class="bot-info">{answer}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="bot-info">{answer}</div>', unsafe_allow_html=True)  # cold blue
 
     chip_html = chips_from_trace(trace)
     if elapsed is not None:
@@ -237,8 +247,7 @@ for msg in st.session_state.messages:
         if msg["role"] == "assistant":
             render_answer(msg["content"], msg.get("trace", []), msg.get("elapsed"))
         else:
-            st.markdown(f'<div class="user-bubble">{msg["content"]}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(msg["content"])   # normal user bubble
 
 
 # ===========================================================================
@@ -253,7 +262,7 @@ if prompt:
 
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user", avatar="🧑‍💻"):
-        st.markdown(f'<div class="user-bubble">{prompt}</div>', unsafe_allow_html=True)
+        st.markdown(prompt)   # normal user bubble
 
     with st.chat_message("assistant", avatar="🛡️"):
         with st.spinner("Analyzing threat intelligence…"):
