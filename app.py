@@ -1,158 +1,255 @@
 """
 app.py — Streamlit chat UI for the Conversational Threat-Intelligence Agent.
 
-This is the human-facing front end for the LangGraph agent. It provides:
-  • A natural-language chat interface (Conversational UX)
-  • TRUE multi-turn memory via st.session_state — two layers:
-      1. ENTITY memory  → last_ip / last_domain / last_actor (resolves "that IP")
-      2. HISTORY window → the last 3 exchanges of raw conversation, passed to
-         the LLM so it has genuine conversational context ("what did we discuss?")
-  • A live, per-message execution trace in an expander (observability bonus).
+Professional, readable UI using well-known Streamlit patterns:
+  • st.chat_message / st.chat_input        — standard chat layout
+  • Color-coded verdict banners            — st.error/warning/success (scannable)
+  • Intent + confidence "chips"            — st.caption + inline badges
+  • Clean, icon-led execution trace        — readable observability
+  • Sidebar with capabilities, memory,     — orientation + controls
+    example one-click queries, and reset
 
-Run it from the project root:
+Two memory layers persist in st.session_state:
+  1. Entity memory (last_ip / domain / hash / actor)  → resolves "that IP"
+  2. History window (last 3 exchanges)                → conversational context
+
+Run from the project root:
     streamlit run app.py
-
-Why session_state matters:
-  Streamlit re-runs this whole script on every interaction. st.session_state
-  is the one thing that PERSISTS across those re-runs — so we store both the
-  chat history and the agent's entity-memory there.
 """
 
+import time
 import streamlit as st
 
 from agent.graph import agent_app
 from agent.state import AgentState
 
-# How many recent messages to feed the LLM as context.
-# 6 messages = 3 user/assistant exchanges. This is our context-window control
-# (also caps token spend → Cost & Rate-Limits bonus).
-HISTORY_WINDOW = 6
+HISTORY_WINDOW = 6  # 3 user + 3 assistant messages
 
 
-# ---------------------------------------------------------------------------
-# Page config
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Page config + light styling
+# ===========================================================================
 st.set_page_config(
     page_title="Threat Intelligence Agent",
     page_icon="🛡️",
-    layout="centered",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("🛡️ Threat Intelligence Agent")
-st.caption(
-    "Ask about IOCs, threat actors, software exposure, or pivot between entities. "
-    "Answers are grounded in live threat-intel sources with citations."
+# Minimal CSS for a professional feel (chips, spacing) — readability preserved.
+st.markdown(
+    """
+    <style>
+      .chip {
+        display:inline-block; padding:2px 10px; margin:2px 6px 2px 0;
+        border-radius:12px; font-size:0.78rem; font-weight:600;
+        background:#eef2f7; color:#1f2d3d; border:1px solid #d7dee8;
+      }
+      .chip-danger  { background:#fdecec; color:#b3261e; border-color:#f5c2c0; }
+      .chip-warn    { background:#fff5e6; color:#98590a; border-color:#f5dcae; }
+      .chip-ok      { background:#eaf6ec; color:#1e6b32; border-color:#bfe3c6; }
+      .chip-info    { background:#e9f1fb; color:#1c4e8a; border-color:#c2d8f2; }
+      .step-line    { font-family:ui-monospace,Menlo,Consolas,monospace;
+                      font-size:0.82rem; padding:1px 0; }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 
-# ---------------------------------------------------------------------------
-# Session state — persists across Streamlit re-runs (this IS our memory layer)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Session state
+# ===========================================================================
 if "messages" not in st.session_state:
-    # Chat transcript shown in the UI: list of {role, content, trace}
     st.session_state.messages = []
-
 if "memory" not in st.session_state:
-    # The agent's entity-memory: last_ip, last_domain, last_hash, last_actor...
     st.session_state.memory = {}
 
 
-# ---------------------------------------------------------------------------
-# Helper: build a short rolling history window from recent turns
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Helpers
+# ===========================================================================
 def build_history() -> str:
-    """Return the last HISTORY_WINDOW messages as a readable transcript string."""
+    """Last HISTORY_WINDOW messages as a readable transcript for the LLM."""
     recent = st.session_state.messages[-HISTORY_WINDOW:]
-    lines = []
-    for m in recent:
-        role = "Analyst" if m["role"] == "user" else "Assistant"
-        lines.append(f"{role}: {m['content']}")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Sidebar — helper info + example queries + reset
-# ---------------------------------------------------------------------------
-with st.sidebar:
-    st.header("💡 Try asking")
-    st.markdown(
-        "- `Is 45.83.122.10 malicious?`\n"
-        "- `What TTPs is APT29 known for?`\n"
-        "- `We run Confluence 7.13 — are we exposed?`\n"
-        "- `Pivot from that IP to related domains`\n"
-        "- `And what's its ASN?`"
+    return "\n".join(
+        f"{'Analyst' if m['role']=='user' else 'Assistant'}: {m['content']}"
+        for m in recent
     )
+
+
+def verdict_kind(answer: str) -> str:
+    """Classify the answer text to pick a banner color (scannable at a glance)."""
+    low = answer.lower()
+    if answer.startswith("⛔"):
+        return "blocked"
+    if any(w in low for w in ["malicious", "exposed", "critical", "high-severity", "patch urgently"]):
+        return "danger"
+    if any(w in low for w in ["suspicious", "medium", "potentially"]):
+        return "warn"
+    if any(w in low for w in ["benign", "not malicious", "no exposure", "likely safe"]):
+        return "ok"
+    return "info"
+
+
+def chips_from_trace(trace: list) -> str:
+    """Build small HTML chips summarizing intent + confidence + guard category."""
+    chips = []
+    guard = next((s for s in trace if s.get("step") == "guard"), {})
+    router = next((s for s in trace if s.get("step") == "router"), {})
+
+    if guard:
+        cat = guard.get("category", "safe")
+        cls = "chip-ok" if guard.get("allow") else "chip-danger"
+        chips.append(f'<span class="chip {cls}">🛡️ guard: {cat}</span>')
+    if router.get("intent"):
+        chips.append(f'<span class="chip chip-info">🧭 intent: {router["intent"]}</span>')
+    return "".join(chips)
+
+
+def render_trace(trace: list):
+    """Readable, icon-led execution trace."""
+    icons = {"guard": "🛡️", "router": "🧭", "tools": "🔧", "synth": "📝"}
+    for step in trace:
+        name = step.get("step", "?")
+        icon = icons.get(name, "•")
+        detail = {k: v for k, v in step.items() if k != "step"}
+        st.markdown(
+            f'<div class="step-line">{icon} <b>{name}</b> — {detail}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def render_answer(answer: str, trace: list, elapsed: float = None):
+    """Render an assistant answer with a color banner, chips, and trace."""
+    kind = verdict_kind(answer)
+
+    # Color-coded banner for the headline verdict
+    if kind == "blocked":
+        st.error(answer)
+    elif kind == "danger":
+        st.error(answer)
+    elif kind == "warn":
+        st.warning(answer)
+    elif kind == "ok":
+        st.success(answer)
+    else:
+        st.markdown(answer)
+
+    # Chips row (intent / guard) + optional timing
+    chip_html = chips_from_trace(trace)
+    if elapsed is not None:
+        chip_html += f'<span class="chip">⏱️ {elapsed:.1f}s</span>'
+    if chip_html:
+        st.markdown(chip_html, unsafe_allow_html=True)
+
+    # Observability trace
+    if trace:
+        with st.expander("🔍 Execution trace (tool calls & steps)"):
+            render_trace(trace)
+
+
+# ===========================================================================
+# Header
+# ===========================================================================
+st.title("🛡️ Threat Intelligence Agent")
+st.caption(
+    "Natural-language SOC assistant · IOC reputation · Actor TTPs · "
+    "CVE exposure · Entity pivoting — grounded, cited, injection-resistant."
+)
+st.divider()
+
+
+# ===========================================================================
+# Sidebar
+# ===========================================================================
+with st.sidebar:
+    st.header("🧭 Capabilities")
+    st.markdown(
+        "- 🔍 **IOC lookup** — IP / domain / hash\n"
+        "- 🎭 **Actor & TTP** — e.g. APT29\n"
+        "- 🛡️ **Exposure** — software → CVEs\n"
+        "- 🔗 **Pivot** — related entities\n"
+        "- 💬 **Follow-ups** — “that IP”, “its ASN”"
+    )
+
+    st.divider()
+    st.subheader("⚡ Quick queries")
+    examples = [
+        "Is 45.83.122.10 malicious?",
+        "What TTPs is APT29 known for?",
+        "We run Confluence 7.13 — are we exposed?",
+        "Pivot from that IP to related domains",
+    ]
+    # Clickable example buttons — stage a query for the input loop.
+    for ex in examples:
+        if st.button(ex, use_container_width=True):
+            st.session_state.staged_query = ex
+
     st.divider()
     st.subheader("🧠 Session memory")
-    if st.session_state.memory:
+    if any(st.session_state.memory.values()):
         for k, v in st.session_state.memory.items():
             if v:
-                st.text(f"{k}: {v}")
+                st.markdown(f"<span class='chip chip-info'>{k}: {v}</span>",
+                            unsafe_allow_html=True)
     else:
         st.caption("No entities remembered yet.")
-
     st.caption(f"History window: last {HISTORY_WINDOW // 2} exchanges")
 
-    if st.button("🔄 Clear conversation"):
+    st.divider()
+    if st.button("🔄 Clear conversation", use_container_width=True, type="primary"):
         st.session_state.messages = []
         st.session_state.memory = {}
         st.rerun()
 
 
-# ---------------------------------------------------------------------------
-# Render the existing chat transcript
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Render existing transcript
+# ===========================================================================
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if msg["role"] == "assistant" and msg.get("trace"):
-            with st.expander("🔍 Execution trace (tool calls & steps)"):
-                for step in msg["trace"]:
-                    st.code(str(step), language="python")
+    with st.chat_message(msg["role"], avatar="🧑‍💻" if msg["role"] == "user" else "🛡️"):
+        if msg["role"] == "assistant":
+            render_answer(msg["content"], msg.get("trace", []), msg.get("elapsed"))
+        else:
+            st.markdown(msg["content"])
 
 
-# ---------------------------------------------------------------------------
-# Chat input — the main interaction loop
-# ---------------------------------------------------------------------------
-if prompt := st.chat_input("Ask a threat-intelligence question…"):
+# ===========================================================================
+# Chat input (typed OR staged from an example button)
+# ===========================================================================
+typed = st.chat_input("Ask a threat-intelligence question…")
+staged = st.session_state.pop("staged_query", None)
+prompt = typed or staged
 
-    # Build the history window BEFORE appending the new message,
-    # so it reflects prior turns only.
+if prompt:
     history = build_history()
 
-    # 1) Show + store the user's message
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="🧑‍💻"):
         st.markdown(prompt)
 
-    # 2) Run the agent
-    with st.chat_message("assistant"):
-        with st.spinner("Analyzing…"):
+    with st.chat_message("assistant", avatar="🛡️"):
+        with st.spinner("Analyzing threat intelligence…"):
             initial: AgentState = {
                 "user_input": prompt,
-                "history": history,                    # ← rolling context window
+                "history": history,
                 "trace": [],
-                "memory": st.session_state.memory,     # ← persisted entity memory
+                "memory": st.session_state.memory,
             }
-
+            start = time.time()
             try:
                 final = agent_app.invoke(initial)
                 answer = final.get("answer", "_(no answer produced)_")
                 trace = final.get("trace", [])
-                # Persist updated entity memory for the next turn.
                 st.session_state.memory = final.get("memory", st.session_state.memory)
             except Exception as e:
                 answer = f"⚠️ Something went wrong: `{str(e)[:200]}`"
                 trace = [{"step": "error", "detail": str(e)[:200]}]
+            elapsed = time.time() - start
 
-        # 3) Render the answer + its trace
-        st.markdown(answer)
-        if trace:
-            with st.expander("🔍 Execution trace (tool calls & steps)"):
-                for step in trace:
-                    st.code(str(step), language="python")
+        render_answer(answer, trace, elapsed)
 
-    # 4) Store the assistant turn (with its trace) in the transcript
     st.session_state.messages.append(
-        {"role": "assistant", "content": answer, "trace": trace}
+        {"role": "assistant", "content": answer, "trace": trace, "elapsed": elapsed}
     )
