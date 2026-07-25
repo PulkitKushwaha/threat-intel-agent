@@ -20,6 +20,7 @@ class AgentState(TypedDict, total=False):
     # --- Guard node writes this ---
     blocked: bool                        # True if prompt-injection detected
     block_reason: Optional[str]
+    block_category: str                  # Guard: greeting | out_of_scope | 
 
     # --- Router node writes this ---
     intent: str                          # ioc_lookup | actor_ttp | exposure | pivot | follow_up | unknown
