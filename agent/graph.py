@@ -18,18 +18,21 @@ Key LangGraph ideas demonstrated here:
   • .compile()      — turn the definition into a runnable app
   • Each node returns a *partial* state dict; LangGraph merges it in.
 
+Router uses STRUCTURED OUTPUTS (client.beta.chat.completions.parse) so the
+LLM is constrained to our Pydantic schema at generation time — an invalid
+intent like 'ioc_reputation' becomes structurally impossible.
+
 Run it directly to see the graph route a real query:
     python -m agent.graph "Is 8.8.8.8 malicious?"
 """
 
 import os
 import json
-from typing import Literal
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from pydantic import BaseModel, Field
-from typing import Optional
 
 from langgraph.graph import StateGraph, END
 
@@ -41,30 +44,30 @@ load_dotenv()
 client = AzureOpenAI(
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_version="2024-08-01-preview",
+    api_version="2024-10-21",  # recent GA version that supports structured outputs
 )
 DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
 
 # ===========================================================================
 # Pydantic schema for the router's structured output
-# (This is the LLM↔code boundary we talked about — validated, type-safe.)
+# (This is the LLM↔code boundary — validated, type-safe, schema-enforced.)
 # ===========================================================================
 class RouterDecision(BaseModel):
     intent: Literal[
         "ioc_lookup", "actor_ttp", "exposure", "pivot", "follow_up", "unknown"
     ] = Field(description="The type of threat-intel query.")
-    ip: Optional[str] = None
-    domain: Optional[str] = None
-    hash: Optional[str] = None
-    actor: Optional[str] = None
-    software: Optional[str] = None
-    version: Optional[str] = None
+    ip: Optional[str] = Field(default=None, description="An IPv4 address if present.")
+    domain: Optional[str] = Field(default=None, description="A domain name if present.")
+    hash: Optional[str] = Field(default=None, description="A file hash (MD5/SHA1/SHA256) if present.")
+    actor: Optional[str] = Field(default=None, description="A threat actor name if present, e.g. APT29.")
+    software: Optional[str] = Field(default=None, description="A software/product name if present.")
+    version: Optional[str] = Field(default=None, description="A software version if present.")
 
 
 # ===========================================================================
 # NODE 1 — Guard: detect direct prompt injection BEFORE we do anything else.
-# (Minimal version for now; we'll harden it in guard.py later.)
+# (Minimal keyword version for now; we'll upgrade to structured in guard.py.)
 # ===========================================================================
 def guard_node(state: AgentState) -> dict:
     text = state["user_input"].lower()
@@ -89,25 +92,41 @@ def guard_node(state: AgentState) -> dict:
 
 # ===========================================================================
 # NODE 2 — Router: classify intent + extract entities (the ONE reasoning step).
+#
+# Uses structured outputs: we hand the Pydantic model to the API via .parse(),
+# and get back an already-validated RouterDecision. A graceful try/except
+# falls back to 'unknown' so a transient hiccup never crashes the graph.
 # ===========================================================================
 def router_node(state: AgentState) -> dict:
     system = (
         "You are an intent router for a threat-intelligence agent. "
-        "Classify the analyst's query and extract any indicators. "
-        "Return ONLY valid JSON matching the schema. "
-        "IOC types: ip, domain, hash. If the user refers to 'it'/'that', use intent 'follow_up'."
+        "Classify the analyst's query into one intent and extract any indicators "
+        "(ip, domain, hash, actor, software, version). "
+        "Use intent 'follow_up' when the user refers to a prior entity via 'it', 'that', or 'its'."
     )
-    resp = client.chat.completions.create(
-        model=DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": state["user_input"]},
-        ],
-        response_format={"type": "json_object"},
-    )
-    raw = resp.choices[0].message.content
-    # Pydantic validates + coerces the LLM's JSON — garbage in → catchable error.
-    decision = RouterDecision.model_validate_json(raw)
+
+    try:
+        completion = client.beta.chat.completions.parse(
+            model=DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": state["user_input"]},
+            ],
+            response_format=RouterDecision,   # ← schema enforced at generation time
+        )
+        decision = completion.choices[0].message.parsed
+        if decision is None:
+            decision = RouterDecision(intent="unknown")
+    except Exception as e:
+        # Never crash the graph on a routing hiccup — degrade to 'unknown'.
+        decision = RouterDecision(intent="unknown")
+        trace = state.get("trace", [])
+        trace.append({"step": "router", "error": str(e)[:100], "intent": "unknown"})
+        return {
+            "intent": "unknown",
+            "entities": {},
+            "trace": trace,
+        }
 
     trace = state.get("trace", [])
     trace.append({"step": "router", "intent": decision.intent})
@@ -131,13 +150,20 @@ def tool_node(state: AgentState) -> dict:
 
     if intent == "ioc_lookup":
         target = entities.get("ip") or entities.get("domain") or entities.get("hash")
-        result = ioc.lookup_ioc(target)
-        # remember the entity for follow-ups like "what's its ASN?"
-        memory[f"last_{result['type']}"] = result["ioc"]
+        if target:
+            result = ioc.lookup_ioc(target)
+            # remember the entity for follow-ups like "what's its ASN?"
+            memory[f"last_{result['type']}"] = result["ioc"]
+        else:
+            result = {"verdict": "No indicator found in the query to look up."}
 
     elif intent == "follow_up":
         # resolve "it"/"that" against memory (IP first, then domain/hash)
-        target = memory.get("last_ip") or memory.get("last_domain") or memory.get("last_hash")
+        target = (
+            memory.get("last_ip")
+            or memory.get("last_domain")
+            or memory.get("last_hash")
+        )
         if target:
             result = ioc.lookup_ioc(target)
         else:
@@ -154,6 +180,7 @@ def tool_node(state: AgentState) -> dict:
 
 # ===========================================================================
 # NODE 4 — Synth: ground the answer in tool output (no fabricated intel).
+# This output is HUMAN-facing → free-form natural language (NOT structured).
 # ===========================================================================
 def synth_node(state: AgentState) -> dict:
     system = (
@@ -181,7 +208,7 @@ def synth_node(state: AgentState) -> dict:
 
 # ===========================================================================
 # CONDITIONAL EDGE — after the guard, branch: blocked → END, else → router.
-# A conditional edge is a function that returns the NAME of the next node.
+# A conditional edge is a function that returns the NAME of the next path.
 # ===========================================================================
 def route_after_guard(state: AgentState) -> str:
     return "blocked" if state.get("blocked") else "continue"
